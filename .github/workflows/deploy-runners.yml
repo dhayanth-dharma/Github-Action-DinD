@@ -1,0 +1,77 @@
+env:
+  DESTINATION_ROOT: /home/dhaya/actions-runner
+  REPO: highday-app/highday
+
+name: deploy_runner
+
+on:
+  workflow_dispatch:
+    inputs:
+      reinstall:
+        type: boolean
+        description: Delete all the data and re-initiate runners
+        default: false
+
+jobs:
+  deploy_runners:
+    timeout-minutes: 50
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v3
+
+
+    - name: Set env variables
+      run: |
+        echo "${{ secrets.PERSONAL_ACCESS_TOKEN }}" > ./personal_token.txt
+        echo "${{ env.REPO }}" > ./repo_name.txt
+
+    # Adding ssh key to github action machine
+    - name: Install SSH Key
+      uses: shimataro/ssh-key-action@v2
+      with:
+        key: ${{ secrets.SSH_PRIVATE_KEY }}
+        known_hosts: 'just-a-placeholder'
+
+    # Adding nidai knownhost value to github machine knownhost file
+    - name: Adding Known Hosts
+      run: ssh-keyscan -H -p ${{ secrets.RUNNER_VPS_PORT }} ${{ secrets.RUNNER_VPS_HOST }} >> ~/.ssh/known_hosts
+    
+    # Copying backup scripts to remote server
+    - name: Copy files with SCP
+      run: |
+        siteLocation=${{env.DESTINATION_ROOT}}
+        scp -P ${{ secrets.RUNNER_VPS_PORT }} ./docker-compose.yml ${{ secrets.RUNNER_VPS_USER }}@${{ secrets.RUNNER_VPS_HOST }}:$siteLocation
+        scp -P ${{ secrets.RUNNER_VPS_PORT }} ./Dockerfile ${{ secrets.RUNNER_VPS_USER }}@${{ secrets.RUNNER_VPS_HOST }}:$siteLocation
+        scp -P ${{ secrets.RUNNER_VPS_PORT }} ./start.sh ${{ secrets.RUNNER_VPS_USER }}@${{ secrets.RUNNER_VPS_HOST }}:$siteLocation
+        scp -P ${{ secrets.RUNNER_VPS_PORT }} ./delete-runner.sh ${{ secrets.RUNNER_VPS_USER }}@${{ secrets.RUNNER_VPS_HOST }}:$siteLocation
+        scp -P ${{ secrets.RUNNER_VPS_PORT }} ./personal_token.txt ${{ secrets.RUNNER_VPS_USER }}@${{ secrets.RUNNER_VPS_HOST }}:$siteLocation
+        scp -P ${{ secrets.RUNNER_VPS_PORT }} ./repo_name.txt ${{ secrets.RUNNER_VPS_USER }}@${{ secrets.RUNNER_VPS_HOST }}:$siteLocation
+        scp -P ${{ secrets.RUNNER_VPS_PORT }} ./restart-docker-containers.sh ${{ secrets.RUNNER_VPS_USER }}@${{ secrets.RUNNER_VPS_HOST }}:$siteLocation
+
+    # Run docker restart script in staging server
+    - name: Stop/Start the docker containers
+      uses: appleboy/ssh-action@v0.1.10
+      with:
+        host: ${{ secrets.RUNNER_VPS_HOST }}
+        username: ${{ secrets.RUNNER_VPS_USER }}
+        key: ${{ secrets.SSH_PRIVATE_KEY }}
+        port: ${{ secrets.RUNNER_VPS_PORT }}
+        script: |
+          siteLocation=${{env.DESTINATION_ROOT}}
+          chmod +x $siteLocation/restart-docker-containers.sh
+          $siteLocation/restart-docker-containers.sh ${{ github.event.inputs.reinstall }} $siteLocation
+
+    # Send slack notification
+    - name: Slack Notification
+      continue-on-error: true
+      uses: rtCamp/action-slack-notify@v2
+      if: always()
+      env:
+        SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+        SLACK_USERNAME: highday_bot
+        SLACK_CHANNEL: build-notify
+        SLACK_TITLE: Githun Runners
+        SLACK_MESSAGE: "Githun Runners has been re-deployed. Branch name - ${{ github.ref }}"
+        SLACK_COLOR: ${{ job.status }}
